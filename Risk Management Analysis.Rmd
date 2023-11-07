@@ -1,0 +1,285 @@
+---
+title: "MGT 6090 Assignment 6 Render"
+author: "Mitchell Kramer"
+date: "2023-10-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# MGT 6090 Assignment 6 - Risk Management 
+
+``` {r}
+gtid <- 903176941
+
+set.seed(gtid)
+
+random_number <- sample(1980:2001, 1)
+
+print(random_number)
+
+```
+
+##Random number is 1996
+
+```{r message = FALSE}
+#install.packages("dplyr")
+#install.packages("lubridate")
+#install.packages("data.table")
+#install.packages("rmarkdown")
+#install.packages("tinytex")
+
+library(dplyr)
+library(lubridate)
+library(data.table)
+library(rmarkdown)
+library(tinytex)
+library(ggplot2)
+
+interest_rates <- fread("C:/Users/mitch/Documents/QCF/MGT 6090/F-F_Research_Data_Factors_daily.csv", skip = 4)
+dsf_df <- fread("C:/Users/mitch/Documents/QCF/MGT 6090/mrvqyemh5sxhlkvc.csv", select = c("date", "PERMNO", "PRC", "VOL", "RET", "SHROUT", "vwretd"))
+names(interest_rates)[names(interest_rates) == "V1"] <- "date"
+interest_rates$date <- as.Date(interest_rates$date, format = "%Y%m%d")
+print(interest_rates)
+
+dsf_df$year <-as.numeric(substr(dsf_df$date, 1, 4))
+dsf_df$date <- date(dsf_df$date)
+dsf_df$RET <- as.numeric(dsf_df$RET)
+dsf_df$vwretd <- as.numeric(dsf_df$vwretd)
+
+sampled_permnos <- dsf_df %>%
+  filter(year == 1996) %>%
+  select(PERMNO) %>%
+  distinct() %>%
+  sample_n(250, replace = TRUE)
+
+
+filtered_data <- dsf_df %>%
+  filter(PERMNO %in% sampled_permnos$PERMNO)
+
+filtered_data <- merge(filtered_data, interest_rates, by = "date")
+
+print(head(filtered_data))
+
+```
+### 6.1 Semi Beta, Downside Beta, Coskew & Tail Risk
+
+```{r warning = FALSE}
+monthly_return <- filtered_data %>%
+  mutate(year_month = floor_date(date, "month")) %>% 
+  group_by(PERMNO, year_month) %>%
+  summarise(max_return = max(RET, na.rm = TRUE),
+            min_return = min(RET, na.rm = TRUE),
+            avg_return = mean(RET, na.rm = TRUE),
+            market_avg = mean(vwretd, na.rm = TRUE),
+            market_max = max(vwretd, na.rm = TRUE),
+            market_min = min(vwretd, na.rm = TRUE)) %>%
+  ungroup()
+
+print(head(monthly_return))
+
+daily_demeaned <- filtered_data %>%
+  mutate(year_month = floor_date(date, "month")) %>%
+  left_join(monthly_return, by = c("PERMNO", "year_month")) %>%
+  mutate(excess_demeaned_RET = RET - avg_return - RF,
+         excess_demeaned_market = vwretd - market_avg - RF,
+         excess_demeaned_RET_positive = pmax(excess_demeaned_RET, 0),
+         excess_demeaned_RET_negative = pmin(excess_demeaned_RET, 0),
+         excess_demeaned_market_positive = pmax(excess_demeaned_market, 0),
+         excess_demeaned_market_negative = pmin(excess_demeaned_market, 0) ) %>%
+  select(-avg_return, -market_avg)
+
+###print(daily_demeaned)
+
+monthly_demeaned <- daily_demeaned %>%
+  group_by(PERMNO, year_month) %>%
+  summarise(pos_semibeta = sum(excess_demeaned_RET_positive * excess_demeaned_market_positive) / sum(excess_demeaned_market^2), 
+            neg_semibeta = sum(excess_demeaned_RET_negative * excess_demeaned_market_negative) / sum(excess_demeaned_market^2),
+            mpos_semibeta = -sum(excess_demeaned_RET_negative * excess_demeaned_market_positive)/ sum(excess_demeaned_market^2),
+            mneg_semibeta = -sum(excess_demeaned_RET_positive * excess_demeaned_market_negative) / sum(excess_demeaned_market^2),
+            beta = sum(excess_demeaned_RET * excess_demeaned_market) / sum(excess_demeaned_market^2),
+            downbeta = sum(excess_demeaned_RET * excess_demeaned_market_negative) / sum(excess_demeaned_market_negative^2),
+            upbeta = sum(excess_demeaned_RET * excess_demeaned_market_positive) / sum(excess_demeaned_market_positive^2),
+            coskew = sum(1/30 * excess_demeaned_RET * excess_demeaned_market^2) / 
+              (1/30 * sum(excess_demeaned_RET ^ 2 )^.5 * (1/30) * sum(excess_demeaned_market^2)),
+            cokurt = (1/30) * sum(excess_demeaned_RET * excess_demeaned_market ^3) / 
+              ((1/30) * sum(excess_demeaned_RET ^2)^.5 * (1/30 * sum(excess_demeaned_market^2))^1.5))
+
+
+summary(monthly_demeaned)
+
+```
+
+### 6.2 Value At Risk and Expected Shortfall
+
+#### 6.2.1 Value at Risk 1996-2006
+
+```{r}
+
+portfolio_returns <- filtered_data %>%
+  group_by(date) %>%  
+  filter(year >= 1996 & year <= 2005) %>%
+  summarise(portfolio_return = sum(RET * 1000000, na.rm = TRUE)) %>%
+  ungroup()
+
+
+VAR = quantile(portfolio_returns$portfolio_return, 0.05)
+expected_shortfall <- mean(portfolio_returns$portfolio_return[portfolio_returns$portfolio_return < VAR])
+
+cat("One-day 5% VaR: ", VAR, "\n")
+cat("Expected Shortfall: ", expected_shortfall, "\n")
+
+```
+
+#### 6.2.2 Value At Risk 2001-2011
+
+```{r}
+portfolio_returns <- filtered_data %>%
+  group_by(date) %>%  
+  filter( year >= 2001 & year <= 2011) %>%
+  summarise(portfolio_return = sum(RET * 1000000, na.rm = TRUE)) %>%
+  ungroup()
+
+print(portfolio_returns)
+
+VAR = quantile(portfolio_returns$portfolio_return, 0.05)
+expected_shortfall <- mean(portfolio_returns$portfolio_return[portfolio_returns$portfolio_return < VAR])
+
+cat("One-day 5% VaR: ", VAR, "\n")
+cat("Expected Shortfall: ", expected_shortfall, "\n")
+
+```
+- It is interesting that the one-day 5% VAR is significantly higher in the 1996 - 2006 period, perhaps indicative of higher volatility
+- This is particularly interesting with respect to major events that happened in each of the samples - the dotcom bubble bursting and the 2008 housing crisis
+ - A speculative finding might be that the volatility, at least with regards to this randomly sampled portfolio, was higher during the dotcom bubble 
+- Statistically, the expected shortfall is reduced greater proportionally in the period of 2001-2011; this appears to indicate that the period had less fat tails or less negative skew (less tail risk) for the portfolio
+
+
+### 6.3 Volatility Model
+#### Risk Metrics Volatility Formula
+
+```{r warning = FALSE}
+
+lambda <- 0.94
+risk_metrics_variance <- function(data, initial_variance){
+  variances <- numeric(nrow(data))
+  variances[1] <- initial_variance
+  
+  for (i in 2:nrow(data)) {
+    variances[i] <- lambda * variances[i-1] + (1 - lambda) * data$RET[i-1]^2
+  }
+  
+  return(variances)
+}
+```
+
+#### Annual Variances
+```{r warning = FALSE}
+
+annualized_variances <- filtered_data %>%
+  group_by(PERMNO, year) %>%
+  filter(sum(!is.na(RET)) > 1) %>%
+  summarise(annual_variance = var(RET, na.rm = TRUE)) %>%
+  ungroup()
+
+print(annualized_variances)
+
+set.seed(gtid)
+
+five_firms <- sample(unique(sampled_permnos$PERMNO), 5)
+
+subset_data <- filtered_data %>% 
+  filter(PERMNO %in% five_firms)
+
+## subset data only has the five firms data
+
+variances_df <- subset_data %>%
+  group_by(PERMNO) %>%
+  do(data.frame(date = .$date, variance = risk_metrics_variance(., filter(annualized_variances, PERMNO == first(.$PERMNO))$annual_variance)))
+
+print(variances_df)
+
+#print(annualized_variances)
+ggplot(variances_df, aes(x = date, y = variance, color = as.factor(PERMNO))) +
+  geom_line() +
+  labs(title = "Time-Series of Variance (2001-2011)", y = "Variance", color = "Firm PERMNO") +
+  theme_minimal()
+
+
+```
+
+
+### 6.4 GARCH Model
+
+#### Garch Variance Function
+
+``` {r}
+garch_variance <- function(data, alpha, beta, initial_variance){
+  variances <- numeric(nrow(data))
+  variances[1] <- initial_variance
+  
+  for (i in 2:nrow(data)) {
+    variances[i] <- alpha + beta * variances[i-1] + (1 - beta) * data$RET[i-1]^2
+  }
+  
+  return(variances)
+}
+```
+
+#### Estimate Alpha and Beta
+
+```{r warning = FALSE}
+
+est_params_df <- filtered_data %>%
+    filter(year >= 1996 & year<= 2005)
+
+
+results <- list()
+
+est_params_df %>%
+  group_by(PERMNO) %>%
+  filter(!all(is.na(RET)) & !all(is.na(vwretd))) %>%
+  do({
+    model = lm(RET ~ vwretd, data = ., na.action = na.exclude)
+    data.frame(PERMNO = unique(.$PERMNO), alpha = coef(model)[1], beta = coef(model)[2])
+  }) -> estimated_parameters
+
+print(estimated_parameters)
+
+```
+#### January 2012 - December 2022 Variance Plot
+
+``` {r warning = FALSE}
+
+data_2012_2022 <- filtered_data %>%
+  filter(year >= 2012 & year <= 2022)
+
+variances_garch <- data_2012_2022 %>%
+  left_join(estimated_parameters, by = "PERMNO") %>%
+  group_by(PERMNO) %>%
+  do(data.frame(date = .$date, variance_garch = garch_variance(., .$alpha, .$beta, filter(annualized_variances, PERMNO == first(.$PERMNO))$annual_variance)))
+
+set.seed(gtid) 
+
+subset_variances_garch <- variances_garch %>%
+  filter(PERMNO %in% five_firms)
+
+
+ggplot() +
+  geom_line(data = subset_variances_garch, aes(x = date, y = variance_garch, color = as.factor(PERMNO)), linetype = "solid") +
+  labs(title = "GARCH Variances", y = "Variance", x = "Date") +
+  theme_minimal()
+
+```
+
+- Only one company from my random sample survived until the present - as a matter of fact, you can see the failure of two of the stocks in the sample from the previous period (around 2000) when there was a dramatic spike in the variance pending their failure (although they may have been acquired too)
+- the garch model appears ot be more consistent period to period, perhaps reflecting its greater flexibility with regards to shifting market condition
+- the 2020 spike in volatility is massive - I would be interested in investigating the various models around this time period specifically
+
+
+
+
+
+
